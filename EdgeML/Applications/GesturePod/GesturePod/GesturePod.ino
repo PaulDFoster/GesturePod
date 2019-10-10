@@ -48,10 +48,19 @@
 #include "src/utils.h"
 #include "src/lib/I2CDev.h"
 #include "src/lib/MPU6050_6Axis_MotionApps20.h"
-#include "src/comm_module.h"
+//#include "src/comm_module.h"
 // include Arduino.h before wiring_private.h
 #include <Arduino.h>   
+#include <Adafruit_DotStar.h>
 
+#define NUMPIXELS 1 // Number of LEDs in strip
+
+// Here's how to control the LEDs from any two pins:
+#define DATAPIN   7
+#define CLOCKPIN   8
+
+Adafruit_DotStar strip = Adafruit_DotStar(NUMPIXELS, DATAPIN, CLOCKPIN, DOTSTAR_BGR);
+  
 /* Arduino Wire library is required if I2Cdev
  * I2CDEV_ARDUINO_WIRE implementation is used
  * in I2Cdev.h
@@ -79,7 +88,7 @@ Vote Vote1(10);
 int VOTE_RESULT;
 int COUNT_AFTER_RESET;
 // BLE class constructor for communicating gestures through BLE
-BLE BLE_module;
+//BLE BLE_module;
 /* 
  * Used for min-max normalization.
  * These values may have to be changed depending on MPU
@@ -122,7 +131,7 @@ void setup() {
         Fastwire::setup(400, true);
 #endif
     Serial.begin(BAUD_RATE);
-    delay(2000);
+    delay(5000);
     if (predictor1.getErrorCode()){
         Serial.print("ProtoNNF initialization failed with code ");
         Serial.println(predictor1.getErrorCode());
@@ -131,6 +140,19 @@ void setup() {
     Serial.println("Initialize MPU..");
     mpu1.initialize();
     uint8_t devStatus = mpu1.dmpInitialize();
+    
+    // supply your own gyro offsets here, scaled for min sensitivity
+    //mpu1.setXGyroOffset(-101);
+    //mpu1.setYGyroOffset(-6);
+    //mpu1.setZGyroOffset(12);
+    //mpu1.setZAccelOffset(1045); // 1688 factory default for my test chip
+
+    // supply your own gyro offsets here, scaled for min sensitivity
+    mpu1.setXGyroOffset(-18);
+    mpu1.setYGyroOffset(-96);
+    mpu1.setZGyroOffset(-53);
+    mpu1.setZAccelOffset(9461); // 1688 factory default for my test chip
+    
     if (devStatus == 0){
         Serial.print("Enabling DMP...");
         mpu1.setDMPEnabled(true);
@@ -147,18 +169,21 @@ void setup() {
     fifoPacketSize = mpu1.dmpGetFIFOPacketSize();
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_BUILTIN, HIGH);
     // Setup() for BLE
-    if(!BLE_module.init())
-        Serial.println("BLE Setup Complete. Please connect");
-    else{
+    //if(!BLE_module.init())
+    //    Serial.println("BLE Setup Complete. Please connect");
+    //else{
         /* If BLE setup fails, you cannot receive information through 
          * BLE. However, predictions will still be displayed on console.
          */
-        Serial.println("Failed to Setup BLE");
-        Serial.println("Use \"#define __DEBUG_BLE__\" to debug");
-    }
+    //    Serial.println("Failed to Setup BLE");
+    //    Serial.println("Use \"#define __DEBUG_BLE__\" to debug");
+    //}
     COUNT_AFTER_RESET = 0;
     VOTE_RESULT = 1;
+    strip.begin(); // Initialize pins for output
+    strip.show();  // Turn all LEDs off ASAP
 }
 
 void loop() {
@@ -238,11 +263,51 @@ void loop() {
                 digitalWrite(LED_PIN, HIGH);
                 Serial.print("Communicating gesture: ");
                 Serial.println(GESTURE_TO_COMMUNICATE[VOTE_RESULT]);
-                BLE_module.writeln(GESTURE_TO_COMMUNICATE[VOTE_RESULT]);
+                //BLE_module.writeln(GESTURE_TO_COMMUNICATE[VOTE_RESULT]);
                 LAST_SENT_TIME = millis();
                 digitalWrite(LED_PIN, LOW);
+                setDotStar(VOTE_RESULT);
+            }
+            else
+            {
+                setDotStar(0); // Off
             }
         }
         numNewReadings = 0;
+    }
+}
+
+void setDotStar(int gesture)
+{
+    switch (gesture)
+    {
+      case 0: // Off
+        strip.setPixelColor(0, 0x000000); // off
+        strip.show();    
+        break;
+      case 3: //Double Tap
+        strip.setPixelColor(0, 0xFF0000); // red
+        strip.show();
+        break;
+      case 4: // R-T
+        strip.setPixelColor(0, 0x00FF00); // green
+        strip.show();
+        break;
+      case 5: // L-T
+        strip.setPixelColor(0, 0x0000FF); // blue
+        strip.show();
+        break;
+      case 6: // Tw
+        strip.setPixelColor(0, 0xFF8000); // orange
+        strip.show();
+        break;
+      case 7: // ???
+        strip.setPixelColor(0, 0xFF33FF); // PINK
+        strip.show();
+        break;
+      case 9: // D-S
+        strip.setPixelColor(0, 0xFFFF66); // Yellow
+        strip.show();
+        break;
     }
 }
