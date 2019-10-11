@@ -1,156 +1,102 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[99]:
-
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT license.
 
 from __future__ import print_function
 import sys
 import os
 import numpy as np
-import torch
-import pandas as pd
-
-from pytorch_edgeml.graph.protoNN import ProtoNN
 from pytorch_edgeml.trainer.protoNNTrainer import ProtoNNTrainer
+from pytorch_edgeml.graph.protoNN import ProtoNN
 import pytorch_edgeml.utils as utils
 import helpermethods as helper
+import torch
+
+def main():
+    # change cuda:0 to cuda:gpu_id for using particular gpu
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    config = helper.getProtoNNArgs()
+    # Get hyper parameters
+    DATA_DIR = config.data_dir
+    PROJECTION_DIM = config.projection_dim
+    NUM_PROTOTYPES = config.num_prototypes
+    REG_W = config.rW
+    REG_B = config.rB
+    REG_Z = config.rZ
+    SPAR_W = config.sW
+    SPAR_B = config.sB
+    SPAR_Z = config.sZ
+    LEARNING_RATE = config.learning_rate
+    NUM_EPOCHS = config.epochs
+    BATCH_SIZE = config.batch_size
+    PRINT_STEP = config.print_step
+    VAL_STEP = config.val_step
+    OUT_DIR = config.output_dir
+
+    # Load data
+    #train = np.load(DATA_DIR + '/_train.csv')
+    train = np.genfromtxt(DATA_DIR + '/_train.csv', delimiter=",", skip_header=1)
+    #test = np.load(DATA_DIR + '/_test.csv')
+    test = np.genfromtxt(DATA_DIR + '/_test.csv', delimiter=",", skip_header=1)
+    x_train, y_train = train[:, 1:], train[:, 0]
+    x_test, y_test = test[:, 1:], test[:, 0]
+    # Convert y to one-hot
+    minval = min(min(y_train), min(y_test))
+    numClasses = max(y_train) - min(y_train) + 1
+    numClasses = max(numClasses, max(y_test) - min(y_test) + 1)
+    numClasses = int(numClasses)
+    y_train = helper.to_onehot(y_train, numClasses, minlabel=minval)
+    y_test = helper.to_onehot(y_test, numClasses, minlabel=minval)
+    dataDimension = x_train.shape[1]
+
+    W, B, gamma = helper.getGamma(config.gamma, PROJECTION_DIM, dataDimension,
+                                  NUM_PROTOTYPES, x_train)
+
+    # Setup input and train protoNN
+    protoNN = ProtoNN(dataDimension, PROJECTION_DIM,
+                      NUM_PROTOTYPES, numClasses,
+                      gamma, W=W, B=B).to(device)
+
+    trainer = ProtoNNTrainer(protoNN, REG_W, REG_B, REG_Z,
+                             SPAR_W, SPAR_B, SPAR_Z,
+                             LEARNING_RATE, lossType='xentropy', device=device)
+    # Train the protoNN object
+    trainer.train(BATCH_SIZE, NUM_EPOCHS, x_train, x_test,
+                  y_train, y_test, printStep=PRINT_STEP, valStep=VAL_STEP)
+
+    # Print some summary metrics
+    x_, y_= (torch.Tensor(x_test)).to(device), (torch.Tensor(y_test)).to(device)
+
+    logits = protoNN.forward(x_)
+    _, predictions = torch.max(logits, dim=1)
+    _, target = torch.max(y_, dim=1)
+    acc, count = trainer.accuracy(predictions, target)
+    #Model needs to be on cpu for numpy operations below
+    protoNN = protoNN.cpu()
+    W, B, Z, gamma  = protoNN.getModelMatrices()
+    matrixList = [W, B, Z]
+    matrixList = [x.detach().numpy() for x in matrixList]
+    sparcityList = [SPAR_W, SPAR_B, SPAR_Z]
+    nnz, size, sparse = helper.getModelSize(matrixList, sparcityList)
+    print("Final test accuracy", acc)
+    print("Model size constraint (Bytes): ", size)
+    print("Number of non-zeros: ", nnz)
+    nnz, size, sparse = helper.getModelSize(matrixList, sparcityList,
+                                            expected=False)
+    print("Actual model size: ", size)
+    print("Actual non-zeros: ", nnz)
+    print("Saving model matrices to: ", OUT_DIR)
+    np.save(OUT_DIR + '/W.npy', matrixList[0])
+    np.save(OUT_DIR + '/B.npy', matrixList[1])
+    np.save(OUT_DIR + '/Z.npy', matrixList[2])
+    np.save(OUT_DIR + '/gamma.npy', gamma)
+    matrixList[0].tofile(OUT_DIR + '/w.txt',",","%f")
+    matrixList[1].tofile(OUT_DIR + '/b.txt',",","%f")
+    matrixList[2].tofile(OUT_DIR + '/z.txt',",","%f")
+    print("Gamma: ", gamma)
+    np.savetxt(OUT_DIR + '/w.csv', matrixList[0], delimiter=',') 
+    np.savetxt(OUT_DIR + '/b.csv', matrixList[1], delimiter=',') 
+    np.savetxt(OUT_DIR + '/z.csv', matrixList[2], delimiter=',') 
 
 
-# ## Paul's Data
-# It is assumed that the USPS data has already been downloaded and set up with the help of `fetch_usps.py` and is placed in the `./usps10` subdirectory.
-
-# In[106]:
-
-
-# Load data
-DATA_DIR = './mpu'
-#train, test = np.load(DATA_DIR + '/train.npy'), np.load(DATA_DIR + '/test.npy')
-train = np.genfromtxt(DATA_DIR + '/_train.csv', delimiter=",", skip_header=1)
-test = np.genfromtxt(DATA_DIR + '/_test.csv', delimiter=",", skip_header=1)
-x_train, y_train = train[:, 1:], train[:, 0]
-x_test, y_test = test[:, 1:], test[:, 0]
-
-numClasses = max(y_train) - min(y_train) + 1
-numClasses = max(numClasses, max(y_test) - min(y_test) + 2) # +2 to allow for zero index
-numClasses = int(numClasses)
-
-y_train = helper.to_onehot(y_train, numClasses)
-y_test = helper.to_onehot(y_test, numClasses)
-
-print(x_train.shape)
-print(y_train.shape)
-# Load data
-train = np.genfromtxt(DATA_DIR + '/_train.csv', delimiter=",", skip_header=1)
-test = np.genfromtxt(DATA_DIR + '/_test.csv', delimiter=",", skip_header=1)
-x_train, y_train = train[:, 1:], train[:, 0]
-x_test, y_test = test[:, 1:], test[:, 0]
-# Convert y to one-hot
-minval = 0
-#numClasses = int(10)
-y_train = helper.to_onehot(y_train, numClasses, minlabel=minval)
-y_test = helper.to_onehot(y_test, numClasses, minlabel=minval)
-dataDimension = x_train.shape[1]
-print(x_train.shape)
-print(y_train.shape)
-
-
-dataDimension = x_train.shape[1]
-numClasses = y_train.shape[1]
-
-
-# ## Model Parameters
-# 
-# Note that ProtoNN is very sensitive to the value of the hyperparameter $\gamma$, here stored in valiable GAMMA. If GAMMA is set to None, median heuristic will be used to estimate a good value of $\gamma$ through the helper.getGamma() method. This method also returns the corresponding W and B matrices which should be used to initialize ProtoNN (as is done here).
-
-# In[89]:
-
-
-PROJECTION_DIM = 10
-NUM_PROTOTYPES = 20
-REG_W = 0.0
-REG_B = 0.0
-REG_Z = 0.0
-SPAR_W = 1.0
-SPAR_B = 1.0
-SPAR_Z = 1.0
-LEARNING_RATE = 0.01
-NUM_EPOCHS = 200
-BATCH_SIZE = 64
-GAMMA = 0.0014
-
-
-# In[90]:
-
-
-W, B, gamma = helper.getGamma(GAMMA, PROJECTION_DIM, dataDimension,
-                       NUM_PROTOTYPES, x_train)
-
-
-# In[91]:
-
-
-protoNNObj = ProtoNN(dataDimension, PROJECTION_DIM, NUM_PROTOTYPES, numClasses,
-                     gamma, W=W, B=B)
-protoNNTrainer = ProtoNNTrainer(protoNNObj, REG_W, REG_B, REG_Z, SPAR_W, SPAR_B, SPAR_W,
-                                LEARNING_RATE, lossType='xentropy')
-
-
-# In[92]:
-
-
-protoNNTrainer.train(BATCH_SIZE, NUM_EPOCHS, x_train, x_test, y_train, y_test, printStep=600, valStep=10)
-
-
-# ## Evaluation
-
-# In[93]:
-
-
-x_, y_= torch.Tensor(x_test), torch.Tensor(y_test)
-logits = protoNNObj.forward(x_)
-_, predictions = torch.max(logits, dim=1)
-_, target = torch.max(y_, dim=1)
-acc, count = protoNNTrainer.accuracy(predictions, target)
-W, B, Z, gamma  = protoNNObj.getModelMatrices()
-matrixList = [W, B, Z]
-matrixList = [x.detach().numpy() for x in matrixList]
-sparcityList = [SPAR_W, SPAR_B, SPAR_Z]
-nnz, size, sparse = helper.getModelSize(matrixList, sparcityList)
-print("Final test accuracy", acc)
-print("Model size constraint (Bytes): ", size)
-print("Number of non-zeros: ", nnz)
-nnz, size, sparse = helper.getModelSize(matrixList, sparcityList,
-                                       expected=False)
-print("Actual model size: ", size)
-print("Actual non-zeros: ", nnz)
-
-
-# In[94]:
-
-
-W = W.detach().numpy()
-B = B.detach().numpy()
-Z = Z.detach().numpy()
-W = np.transpose(W)
-B = np.transpose(B)
-Z = np.transpose(Z)
-print(W.shape)
-print(B.shape)
-print(Z.shape)
-np.savetxt("W", W, fmt="%f", delimiter=",")
-np.savetxt("B", B, fmt="%f", delimiter=",")
-np.savetxt("Z", Z, fmt="%f", delimiter=",")
-
-
-# In[95]:
-
-
-gamma
-
-
-# In[ ]:
-
-
-
-
+if __name__ == '__main__':
+    main()
